@@ -139,16 +139,16 @@ deriveElmTypeDefinition :: forall a. (HasDatatypeInfo a, All2 HasElmType (Code a
 deriveElmTypeDefinition options name =
   case datatypeInfo (Proxy @a) of
     ADT _mname _tname (Record _cname fields :* Nil) ->
-      Definition.Alias name (Type.Record (recordFields fields))
+      Definition.Alias name 0 (Bound.Scope $ pure $ Bound.F $ Type.Record (recordFields fields))
 
     ADT _mname _tname cs ->
-      Definition.Type name (constructors cs)
+      Definition.Type name 0 (fmap (fmap (Bound.Scope . pure . Bound.F)) <$> constructors cs)
 
     Newtype _mname _tname (Record _cname fields) ->
-      Definition.Alias name (Type.Record (recordFields fields))
+      Definition.Alias name 0 (Bound.Scope $ pure $ Bound.F $ Type.Record (recordFields fields))
 
     Newtype _mname _tname c ->
-      Definition.Type name (constructors (c :* Nil))
+      Definition.Type name 0 (fmap (fmap (Bound.Scope . pure . Bound.F)) <$> constructors (c :* Nil))
   where
     recordFields :: All HasElmType xs => NP FieldInfo xs -> [(Name.Field, Type v)]
     recordFields Nil = []
@@ -173,6 +173,41 @@ deriveElmTypeDefinition options name =
       where
         go :: forall x xs v. (HasElmType x, All HasElmType xs) => Shape (x ': xs) -> [Type v]
         go (ShapeCons s') = elmType @x : constructorFields s'
+
+data Parameter (n :: Nat)
+
+instance KnownNat n => HasElmType (Parameter n) where
+  elmType =
+    Type.Global $
+      Name.Qualified ["Haskell", "To", "Elm"] ("Parameter" <> show (natVal $ Proxy @n))
+
+deriveElmTypeDefinition1
+  :: forall a. (HasDatatypeInfo (a (Parameter 0)), All2 HasElmType (Code (a (Parameter 0))))
+  => Options
+  -> Name.Qualified
+  -> Definition
+deriveElmTypeDefinition1 options name =
+  case deriveElmTypeDefinition @(a (Parameter 0)) options name of
+    Definition.Type name' numParams constructors ->
+      Definition.Type name' (numParams + 1) $ fmap (fmap $ rebindScope numParams) <$> constructors
+
+    Definition.Alias name' numParams type_ ->
+      Definition.Alias name' (numParams + 1) $ rebindScope numParams type_
+
+    Definition.Constant {} ->
+      panic "deriveElmTypeDefinition1: expected type"
+  where
+    rebindScope :: Int -> Bound.Scope Int Type Void -> Bound.Scope Int Type Void
+    rebindScope numParams =
+      Bound.toScope . Type.bind (rebindGlobal numParams) pure . Bound.fromScope
+
+    rebindGlobal :: Int -> Name.Qualified -> Type (Bound.Var Int Void)
+    rebindGlobal numParams global
+      | Type.Global global == elmType @(Parameter 0) @Void =
+        pure $ Bound.B numParams
+
+      | otherwise =
+        Type.Global global
 
 -- | Automatically create an Elm JSON decoder definition given a Haskell type.
 --

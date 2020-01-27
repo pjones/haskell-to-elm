@@ -1,8 +1,10 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 module User where
 
@@ -16,29 +18,30 @@ import qualified Language.Elm.Pretty as Pretty
 import qualified Language.Elm.Simplification as Simplification
 import Language.Haskell.To.Elm
 
-data User = User
+data User a = User
   { name :: Text
   , age :: Int
+  , param :: a
   } deriving (Generic, Aeson.ToJSON, SOP.Generic, SOP.HasDatatypeInfo)
 
-instance HasElmType User where
+instance HasElmType a => HasElmType (User a) where
   elmDefinition =
-    Just $ deriveElmTypeDefinition @User defaultOptions "Api.User.User"
+    Just $ deriveElmTypeDefinition @(User a) defaultOptions "Api.User.User"
 
-instance HasElmDecoder Aeson.Value User where
+instance HasElmDecoder Aeson.Value a => HasElmDecoder Aeson.Value (User a) where
   elmDecoderDefinition =
-    Just $ deriveElmJSONDecoder @User defaultOptions Aeson.defaultOptions "Api.User.decoder"
+    Just $ deriveElmJSONDecoder @(User a) defaultOptions Aeson.defaultOptions "Api.User.decoder"
 
-instance HasElmEncoder Aeson.Value User where
+instance HasElmEncoder Aeson.Value a => HasElmEncoder Aeson.Value (User a) where
   elmEncoderDefinition =
-    Just $ deriveElmJSONEncoder @User defaultOptions Aeson.defaultOptions "Api.User.encoder"
+    Just $ deriveElmJSONEncoder @(User a) defaultOptions Aeson.defaultOptions "Api.User.encoder"
 
 main :: IO ()
 main = do
   let
     definitions =
       Simplification.simplifyDefinition <$>
-        jsonDefinitions @User
+        jsonDefinitions @(User Int)
 
     modules =
       Pretty.modules definitions
