@@ -154,45 +154,38 @@ instance KnownNat n => HasElmType (Parameter n) where
     Type.Global $
       Name.Qualified ["Haskell", "To", "Elm"] ("Parameter" <> show (natVal $ Proxy @n))
 
-instance (KnownNat numParams, DeriveParameterisedElmTypeDefinition (numParams + 1) (f (Parameter numParams))) => DeriveParameterisedElmTypeDefinition numParams (f :: * -> b) where
+instance (DeriveParameterisedElmTypeDefinition (numParams + 1) (f (Parameter numParams))) => DeriveParameterisedElmTypeDefinition numParams (f :: * -> b) where
   deriveParameterisedElmTypeDefinition options name =
-    case deriveParameterisedElmTypeDefinition @(numParams + 1) @(f (Parameter numParams)) options name of
-      Definition.Type name' numParams constructors ->
-        Definition.Type name' (numParams + 1) $ fmap (fmap rebindScope) <$> constructors
-
-      Definition.Alias name' numParams type_ ->
-        Definition.Alias name' (numParams + 1) $ rebindScope type_
-
-      Definition.Constant {} ->
-        panic "deriveParamterisedElmTypeDefinition: expected type"
-    where
-      rebindScope :: Bound.Scope Int Type Void -> Bound.Scope Int Type Void
-      rebindScope =
-        Bound.toScope . Type.bind rebindGlobal (pure . first (+ 1)) . Bound.fromScope
-
-      rebindGlobal :: Name.Qualified -> Type (Bound.Var Int Void)
-      rebindGlobal global
-        | Type.Global global == elmType @(Parameter numParams) @Void =
-          pure $ Bound.B 0
-
-        | otherwise =
-          Type.Global global
+    deriveParameterisedElmTypeDefinition @(numParams + 1) @(f (Parameter numParams)) options name
 
 instance (KnownNat numParams, HasDatatypeInfo a, All2 HasElmType (Code a)) => DeriveParameterisedElmTypeDefinition numParams (a :: *) where
   deriveParameterisedElmTypeDefinition options name =
     case datatypeInfo (Proxy @a) of
       ADT _mname _tname (Record _cname fields :* Nil) ->
-        Definition.Alias name numParams (Bound.Scope $ pure $ Bound.F $ Type.Record (recordFields fields))
+        Definition.Alias name numParams (bindTypeParameters $ Type.Record (recordFields fields))
 
       ADT _mname _tname cs ->
-        Definition.Type name numParams (fmap (fmap (Bound.Scope . pure . Bound.F)) <$> constructors cs)
+        Definition.Type name numParams (fmap (fmap bindTypeParameters) <$> constructors cs)
 
       Newtype _mname _tname (Record _cname fields) ->
-        Definition.Alias name numParams (Bound.Scope $ pure $ Bound.F $ Type.Record (recordFields fields))
+        Definition.Alias name numParams (bindTypeParameters $ Type.Record (recordFields fields))
 
       Newtype _mname _tname c ->
-        Definition.Type name numParams (fmap (fmap (Bound.Scope . pure . Bound.F)) <$> constructors (c :* Nil))
+        Definition.Type name numParams (fmap (fmap bindTypeParameters) <$> constructors (c :* Nil))
     where
+      typeParameterMap :: HashMap Name.Qualified Int
+      typeParameterMap =
+        HashMap.fromList
+          [ (Name.Qualified ["Haskell", "To", "Elm"] ("Parameter" <> show i), i)
+          | i <- [0..numParams]
+          ]
+
+      bindTypeParameters
+        :: Type v
+        -> Bound.Scope Int Type v
+      bindTypeParameters =
+        Bound.Scope . Type.bind (\n -> maybe (Type.Global n) (pure . Bound.B) (HashMap.lookup n typeParameterMap)) (pure . pure . pure)
+
       numParams =
         fromIntegral $ natVal $ Proxy @numParams
 
