@@ -10,9 +10,11 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 module Language.Haskell.To.Elm where
 
@@ -21,6 +23,7 @@ import Protolude hiding (All, Infix, Type)
 import qualified Bound
 import qualified Data.Aeson as Aeson
 import Data.HashMap.Lazy (HashMap)
+import GHC.TypeLits
 import qualified Data.HashMap.Lazy as HashMap
 import Data.String
 import Data.Text (Text)
@@ -133,46 +136,16 @@ defaultOptions =
 -- @
 -- instance 'HasElmType' MyType where
 --   'elmDefinition' =
---     'Just' $ 'deriveElmTypeDefinition' \@MyType 'defaultOptions' \"Api.MyType.MyType\"
+--     'Just' $ 'deriveElmTypeDefinition' \@_ \@MyType 'defaultOptions' \"Api.MyType.MyType\"
 -- @
-deriveElmTypeDefinition :: forall a. (HasDatatypeInfo a, All2 HasElmType (Code a)) => Options -> Name.Qualified -> Definition
-deriveElmTypeDefinition options name =
-  case datatypeInfo (Proxy @a) of
-    ADT _mname _tname (Record _cname fields :* Nil) ->
-      Definition.Alias name 0 (Bound.Scope $ pure $ Bound.F $ Type.Record (recordFields fields))
+deriveElmTypeDefinition
+  :: forall a. DeriveParameterisedElmTypeDefinition 0 a
+  => Options -> Name.Qualified -> Definition
+deriveElmTypeDefinition =
+  deriveParameterisedElmTypeDefinition @0 @a
 
-    ADT _mname _tname cs ->
-      Definition.Type name 0 (fmap (fmap (Bound.Scope . pure . Bound.F)) <$> constructors cs)
-
-    Newtype _mname _tname (Record _cname fields) ->
-      Definition.Alias name 0 (Bound.Scope $ pure $ Bound.F $ Type.Record (recordFields fields))
-
-    Newtype _mname _tname c ->
-      Definition.Type name 0 (fmap (fmap (Bound.Scope . pure . Bound.F)) <$> constructors (c :* Nil))
-  where
-    recordFields :: All HasElmType xs => NP FieldInfo xs -> [(Name.Field, Type v)]
-    recordFields Nil = []
-    recordFields (f :* fs) = field f : recordFields fs
-
-    field :: forall x v. HasElmType x => FieldInfo x -> (Name.Field, Type v)
-    field (FieldInfo fname) =
-      (fromString $ fieldLabelModifier options fname, elmType @x)
-
-    constructors :: All2 HasElmType xss => NP ConstructorInfo xss -> [(Name.Constructor, [Type v])]
-    constructors Nil = []
-    constructors (c :* cs) = constructor c : constructors cs
-
-    constructor :: forall xs v. All HasElmType xs => ConstructorInfo xs -> (Name.Constructor, [Type v])
-    constructor (Constructor cname) = (fromString cname, constructorFields $ shape @_ @xs)
-    constructor (Infix _ _ _) = panic "Infix constructors are not supported"
-    constructor (Record cname fs) = (fromString cname, [Type.Record $ recordFields fs])
-
-    constructorFields :: All HasElmType xs => Shape xs -> [Type v]
-    constructorFields ShapeNil = []
-    constructorFields s@(ShapeCons _) = go s
-      where
-        go :: forall x xs v. (HasElmType x, All HasElmType xs) => Shape (x ': xs) -> [Type v]
-        go (ShapeCons s') = elmType @x : constructorFields s'
+class DeriveParameterisedElmTypeDefinition numParams (a :: k) where
+  deriveParameterisedElmTypeDefinition :: Options -> Name.Qualified -> Definition
 
 data Parameter (n :: Nat)
 
@@ -181,33 +154,71 @@ instance KnownNat n => HasElmType (Parameter n) where
     Type.Global $
       Name.Qualified ["Haskell", "To", "Elm"] ("Parameter" <> show (natVal $ Proxy @n))
 
-deriveElmTypeDefinition1
-  :: forall a. (HasDatatypeInfo (a (Parameter 0)), All2 HasElmType (Code (a (Parameter 0))))
-  => Options
-  -> Name.Qualified
-  -> Definition
-deriveElmTypeDefinition1 options name =
-  case deriveElmTypeDefinition @(a (Parameter 0)) options name of
-    Definition.Type name' numParams constructors ->
-      Definition.Type name' (numParams + 1) $ fmap (fmap $ rebindScope numParams) <$> constructors
+instance (KnownNat numParams, DeriveParameterisedElmTypeDefinition (numParams + 1) (f (Parameter numParams))) => DeriveParameterisedElmTypeDefinition numParams (f :: * -> b) where
+  deriveParameterisedElmTypeDefinition options name =
+    case deriveParameterisedElmTypeDefinition @(numParams + 1) @(f (Parameter numParams)) options name of
+      Definition.Type name' numParams constructors ->
+        Definition.Type name' (numParams + 1) $ fmap (fmap rebindScope) <$> constructors
 
-    Definition.Alias name' numParams type_ ->
-      Definition.Alias name' (numParams + 1) $ rebindScope numParams type_
+      Definition.Alias name' numParams type_ ->
+        Definition.Alias name' (numParams + 1) $ rebindScope type_
 
-    Definition.Constant {} ->
-      panic "deriveElmTypeDefinition1: expected type"
-  where
-    rebindScope :: Int -> Bound.Scope Int Type Void -> Bound.Scope Int Type Void
-    rebindScope numParams =
-      Bound.toScope . Type.bind (rebindGlobal numParams) pure . Bound.fromScope
+      Definition.Constant {} ->
+        panic "deriveParamterisedElmTypeDefinition: expected type"
+    where
+      rebindScope :: Bound.Scope Int Type Void -> Bound.Scope Int Type Void
+      rebindScope =
+        Bound.toScope . Type.bind rebindGlobal (pure . first (+ 1)) . Bound.fromScope
 
-    rebindGlobal :: Int -> Name.Qualified -> Type (Bound.Var Int Void)
-    rebindGlobal numParams global
-      | Type.Global global == elmType @(Parameter 0) @Void =
-        pure $ Bound.B numParams
+      rebindGlobal :: Name.Qualified -> Type (Bound.Var Int Void)
+      rebindGlobal global
+        | Type.Global global == elmType @(Parameter numParams) @Void =
+          pure $ Bound.B 0
 
-      | otherwise =
-        Type.Global global
+        | otherwise =
+          Type.Global global
+
+instance (KnownNat numParams, HasDatatypeInfo a, All2 HasElmType (Code a)) => DeriveParameterisedElmTypeDefinition numParams (a :: *) where
+  deriveParameterisedElmTypeDefinition options name =
+    case datatypeInfo (Proxy @a) of
+      ADT _mname _tname (Record _cname fields :* Nil) ->
+        Definition.Alias name numParams (Bound.Scope $ pure $ Bound.F $ Type.Record (recordFields fields))
+
+      ADT _mname _tname cs ->
+        Definition.Type name numParams (fmap (fmap (Bound.Scope . pure . Bound.F)) <$> constructors cs)
+
+      Newtype _mname _tname (Record _cname fields) ->
+        Definition.Alias name numParams (Bound.Scope $ pure $ Bound.F $ Type.Record (recordFields fields))
+
+      Newtype _mname _tname c ->
+        Definition.Type name numParams (fmap (fmap (Bound.Scope . pure . Bound.F)) <$> constructors (c :* Nil))
+    where
+      numParams =
+        fromIntegral $ natVal $ Proxy @numParams
+
+      recordFields :: All HasElmType xs => NP FieldInfo xs -> [(Name.Field, Type v)]
+      recordFields Nil = []
+      recordFields (f :* fs) = field f : recordFields fs
+
+      field :: forall x v. HasElmType x => FieldInfo x -> (Name.Field, Type v)
+      field (FieldInfo fname) =
+        (fromString $ fieldLabelModifier options fname, elmType @x)
+
+      constructors :: All2 HasElmType xss => NP ConstructorInfo xss -> [(Name.Constructor, [Type v])]
+      constructors Nil = []
+      constructors (c :* cs) = constructor c : constructors cs
+
+      constructor :: forall xs v. All HasElmType xs => ConstructorInfo xs -> (Name.Constructor, [Type v])
+      constructor (Constructor cname) = (fromString cname, constructorFields $ shape @_ @xs)
+      constructor (Infix _ _ _) = panic "Infix constructors are not supported"
+      constructor (Record cname fs) = (fromString cname, [Type.Record $ recordFields fs])
+
+      constructorFields :: All HasElmType xs => Shape xs -> [Type v]
+      constructorFields ShapeNil = []
+      constructorFields s@(ShapeCons _) = go s
+        where
+          go :: forall x xs v. (HasElmType x, All HasElmType xs) => Shape (x ': xs) -> [Type v]
+          go (ShapeCons s') = elmType @x : constructorFields s'
 
 -- | Automatically create an Elm JSON decoder definition given a Haskell type.
 --
