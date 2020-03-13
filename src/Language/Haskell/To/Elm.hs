@@ -136,11 +136,14 @@ defaultOptions =
 -- @
 -- instance 'HasElmType' MyType where
 --   'elmDefinition' =
---     'Just' $ 'deriveElmTypeDefinition' \@_ \@MyType 'defaultOptions' \"Api.MyType.MyType\"
+--     'Just' $ 'deriveElmTypeDefinition' \@MyType 'defaultOptions' \"Api.MyType.MyType\"
 -- @
 deriveElmTypeDefinition
-  :: forall a. DeriveParameterisedElmTypeDefinition 0 a
-  => Options -> Name.Qualified -> Definition
+  :: forall a
+  . DeriveParameterisedElmTypeDefinition 0 a
+  => Options
+  -> Name.Qualified
+  -> Definition
 deriveElmTypeDefinition =
   deriveParameterisedElmTypeDefinition @0 @a
 
